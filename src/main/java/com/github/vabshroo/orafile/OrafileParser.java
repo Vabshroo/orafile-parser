@@ -9,8 +9,7 @@ import org.apache.commons.lang3.StringUtils;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by IntelliJ IDEA
@@ -22,8 +21,16 @@ import java.util.List;
  */
 public class OrafileParser {
 
-    private final static String LINE = "([a-z]|[A-Z])+([a-z]|[A-Z]|_|[0-9])*=.*";
-    private final static String LIST_LINE = "\\(([a-z]|[A-Z])+([a-z]|[A-Z]|_)*=.*\\){2,}";
+    private final static String LINE = "([a-z]|[A-Z])+([a-z]|[A-Z]|_|[0-9])*\\s*=\\s*.*";
+    private final static String LIST_LINE = "\\(([a-z]|[A-Z])+([a-z]|[A-Z]|_)*\\s*=\\s*.*\\){2,}";
+    private final static Set<Character> NETWORK_CHAR_SET = new HashSet<>(Arrays.asList(
+            '(',')','<','>','/','\\',
+            ',','.',':',';','\'','"','=','-','_',
+            '$','+','*','#','&','!','%','?','@',
+            '0','1','2','3','4','5','6','7','8','9',
+            'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+            'a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z'));
+    private final static Set<Character> INVALID_VALUE_CHAR_SET = new HashSet<>(Arrays.asList(' ','\t','\n','\r'));
 
     public static Orafile parse(String orafileContent) throws OrafileParseException {
 
@@ -59,16 +66,54 @@ public class OrafileParser {
         return parse(orafileContent.toString());
     }
 
+    /**
+     * one property one line
+     * @param orafileContent
+     * @return
+     */
     private static String trimOrafileContent(String orafileContent) {
         StringBuilder stringBuilder = new StringBuilder();
 
         String[] lines = orafileContent.split("\n");
         for (String line : lines) {
             if(StringUtils.isNotBlank(line) &&  StringUtils.isNotBlank(line.trim()) && !line.startsWith("#")){
+                line = line.trim();
+                Integer quoteD = 0;
+                Integer quoteS = 0;
+                char[] lineCharArray = line.toCharArray();
+
+                out:
+                for (int i = 0; i < lineCharArray.length; ) {
+                    switch (lineCharArray[i]){
+                        case '\'':
+                            quoteS++;
+                            i++;
+                            break;
+                        case '"':
+                            quoteD++;
+                            i++;
+                            break;
+                        case '\\':
+                            i+=2;
+                            break;
+                        case '#':
+                            if(quoteD % 2 == 0 && quoteS % 2 == 0){
+                                line = line.substring(0,i).trim();
+                                break out;
+                            }
+                            i++;
+                            break;
+                        default:
+                            i++;
+                            break;
+
+                    }
+                }
+
                 if(line.startsWith(" ") || stringBuilder.length() == 0){
-                    stringBuilder.append(line);
+                    stringBuilder.append(line.trim());
                 }else{
-                    stringBuilder.append("\n").append(line);
+                    stringBuilder.append("\n").append(line.trim());
                 }
             }
         }
@@ -76,6 +121,12 @@ public class OrafileParser {
         return stringBuilder.toString();
     }
 
+    /**
+     * parse each line
+     * @param line
+     * @param oraElements
+     * @throws OrafileParseException
+     */
     private static void generateFromLine(String line, List<OraElement> oraElements) throws OrafileParseException {
         if(StringUtils.isBlank(line)){
             return;
@@ -86,12 +137,20 @@ public class OrafileParser {
         }
 
         Integer index = line.indexOf("=");
-        String key = line.substring(0,index);
-        String stringValue = line.substring(index + 1);
+
+        String key = line.substring(0,index).trim();
+        String stringValue = line.substring(index + 1).trim();
 
         generateOraElement(key,stringValue,oraElements);
     }
 
+    /**
+     * parse element
+     * @param key
+     * @param stringValue
+     * @param oraElements
+     * @throws OrafileParseException
+     */
     private static void generateOraElement(String key, String stringValue, List<OraElement> oraElements) throws OrafileParseException {
         List<String> stringList = new ArrayList<>();
         char[] charArray = stringValue.toCharArray();
@@ -99,17 +158,40 @@ public class OrafileParser {
         Integer sum = 0;
         Integer start = 0;
         Integer end = 0;
-        for (int i = 0; i < charArray.length; i++) {
+        Integer quoteD = 0;
+        Integer quoteS = 0;
+        for (int i = 0; i < charArray.length;) {
             switch (charArray[i]){
+                case '\\':
+                    i+=2;
+                    break;
+                case '\'':
+                    quoteS ++;
+                    i++;
+                    break;
+                case '"':
+                    quoteD ++;
+                    i++;
+                    break;
                 case '(':
+                    if(sum == 0){
+                        start = i;
+                    }
                     sum -= 1;
+                    i++;
                     break;
                 case ')':
                     sum +=1;
-                    end = i + 1;
+                    if(sum == 0){
+                        end = i + 1;
+                    }
+                    i++;
+                    break;
                 default:
+                    i++;
                     break;
             }
+
             if(sum == 0 && start < end){
                 stringList.add(stringValue.substring(start,end));
                 start = end;
@@ -121,7 +203,12 @@ public class OrafileParser {
             throw new OrafileParseException("Brackets not match: " + stringValue);
         }
 
+        if(quoteD % 2 > 0 || quoteS % 2 > 0){
+            throw new OrafileParseException("quote not match: " + stringValue);
+        }
+
         if(start == 0 && start == end){
+            checkStringValue(key,stringValue);
             oraElements.add(new SimpleOraElement(key,stringValue));
         }else{
             List<OraElement> oraElementsChild = new ArrayList<>();
@@ -133,6 +220,27 @@ public class OrafileParser {
             }
         }
 
+    }
+
+    /**
+     * check value
+     * @param key
+     * @param stringValue
+     * @throws OrafileParseException
+     * @return
+     */
+    private static String  checkStringValue(String key, String stringValue) throws OrafileParseException {
+        if(StringUtils.isBlank(stringValue)){
+            throw new OrafileParseException("null value: " + key + "=" + stringValue);
+        }
+
+        for (char c : stringValue.toCharArray()) {
+            if(INVALID_VALUE_CHAR_SET.contains(c) || !NETWORK_CHAR_SET.contains(c)){
+                throw new OrafileParseException("invalid value: " + stringValue);
+            }
+        }
+
+        return  stringValue;
     }
 
 }
