@@ -8,7 +8,7 @@ package com.github.vabshroo.orafile.exception;
  * @time 21:16
  * @desc OrafileParseException
  */
-public class OrafileParseException extends Exception {
+public class OrafileParseException extends RuntimeException {
 
     public OrafileParseException(String message){
         super(message);
